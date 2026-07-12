@@ -94,15 +94,33 @@
   }
   .dl:hover{border-color:var(--accent);color:var(--accent)}
 
-  /* ---- Interruptor límite 15 MB ---- */
-  .limit{
+  /* ---- Pregunta de orientación ---- */
+  .orient{
     width:100%;max-width:640px;margin-top:22px;
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    padding:16px 18px;
+  }
+  .orient b{display:block;font-size:14.5px;font-weight:600;margin-bottom:4px}
+  .orient small{color:var(--text-dim);font-size:12.5px;line-height:1.5;display:block;margin-bottom:12px}
+  .pills{display:flex;gap:10px;flex-wrap:wrap}
+  .pill{
+    background:var(--surface-2);border:1px solid var(--line);color:var(--text-dim);
+    border-radius:99px;padding:10px 18px;font-size:13.5px;font-weight:600;
+    cursor:pointer;font-family:inherit;transition:border-color .15s,color .15s;
+  }
+  .pill:hover{border-color:var(--accent)}
+  .pill.active{border-color:var(--accent);color:var(--accent)}
+  .pill:disabled{opacity:.5;cursor:not-allowed}
+
+  /* ---- Ajustes (interruptores) ---- */
+  .setting{
+    width:100%;max-width:640px;margin-top:12px;
     background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
     padding:16px 18px;display:flex;align-items:center;gap:16px;
   }
-  .limit .info{flex:1}
-  .limit .info b{display:block;font-size:14.5px;font-weight:600}
-  .limit .info small{color:var(--text-dim);font-size:12.5px;line-height:1.5;display:block;margin-top:3px}
+  .setting .info{flex:1}
+  .setting .info b{display:block;font-size:14.5px;font-weight:600}
+  .setting .info small{color:var(--text-dim);font-size:12.5px;line-height:1.5;display:block;margin-top:3px}
   .switch{
     position:relative;width:52px;height:28px;flex-shrink:0;
     background:var(--surface-2);border:1px solid var(--line);border-radius:99px;
@@ -144,7 +162,7 @@
 <header>
   <div class="eyebrow">Herramienta del equipo</div>
   <h1>Cuadrador de videos</h1>
-  <p class="sub">Sube uno o varios videos. Antes de convertir, la herramienta detecta y elimina las barras negras que vengan incrustadas en el original, para que el contenido real aproveche todo el espacio posible. Luego lo encaja en el formato elegido agregando negro solo donde hace falta, elimina toda la metadata y descarga cada video automáticamente. Todo ocurre en tu navegador: los videos nunca salen de tu computador.</p>
+  <p class="sub">Sube uno o varios videos, dinos cómo vienen, y exporta. Las barras negras se agregan solo donde hacen falta, se elimina toda la metadata y cada video se descarga automáticamente con su nombre original. Todo ocurre en tu navegador: los videos nunca salen de tu computador.</p>
 </header>
 
 <div class="drop" id="drop" tabindex="0" role="button" aria-label="Subir videos">
@@ -156,7 +174,24 @@
 
 <div class="queue" id="queue"></div>
 
-<div class="limit">
+<div class="orient">
+  <b>¿Cómo vienen estos videos?</b>
+  <small>Aplica a todo el lote. Si mezclas verticales y cuadrados, procesa primero un grupo y luego el otro.</small>
+  <div class="pills">
+    <button class="pill" id="orientVt">Vienen en vertical</button>
+    <button class="pill" id="orientSq">Vienen en cuadrado</button>
+  </div>
+</div>
+
+<div class="setting">
+  <div class="info">
+    <b>Quitar barras negras del original</b>
+    <small>Enciéndelo solo si tus videos traen negro pegado de fábrica: se analiza cada video antes de convertir para eliminarlo y que el contenido aproveche todo el espacio. Agrega tiempo extra por video.</small>
+  </div>
+  <button class="switch" id="stripSwitch" role="switch" aria-checked="false" aria-label="Quitar barras negras del original"></button>
+</div>
+
+<div class="setting">
   <div class="info">
     <b>Límite de 15 MB por video</b>
     <small>Activado: cada video exportado pesa máximo 15 MB. Primero se comprime; si aun con la calidad mínima (2 Mbps) no cabe, se recorta desde el segundo 0 hasta donde alcance (~55 seg máx).</small>
@@ -168,7 +203,7 @@
   <button class="go" id="goAuto" disabled>Exportar</button>
   <button class="go alt" id="goSq" disabled>Exportar cuadrado</button>
   <button class="go alt" id="goVt" disabled>Exportar vertical</button>
-  <span class="hint">"Exportar" convierte cada video al formato contrario: los verticales salen en cuadrado 1:1 y los cuadrados salen en vertical 9:16 (los horizontales salen en cuadrado). Los otros dos botones llevan todo el lote a un mismo formato.</span>
+  <span class="hint">"Exportar" convierte al formato contrario según tu respuesta: si vienen en vertical salen en cuadrado (laterales en negro), y si vienen en cuadrado salen en vertical (franjas arriba y abajo). Los otros dos botones llevan todo el lote a ese formato sin necesidad de responder la pregunta.</span>
   <span class="hint" id="count"></span>
 </div>
 <div class="status" id="status"></div>
@@ -185,6 +220,8 @@ let ffmpeg = null;
 let files = [];          // { file, status, row }
 let working = false;
 let limitOn = false;
+let stripOn = false;
+let orientation = null;  // 'vt' (vienen en vertical) | 'sq' (vienen en cuadrado)
 
 // ---- Parámetros del límite de 15 MB ----
 const LIMIT_BYTES   = 15 * 1024 * 1024;  // 15 MB
@@ -206,14 +243,33 @@ const goVt   = document.getElementById('goVt');
 const count  = document.getElementById('count');
 const status = document.getElementById('status');
 const limitSwitch = document.getElementById('limitSwitch');
-const goButtons = [goAuto, goSq, goVt];
+const stripSwitch = document.getElementById('stripSwitch');
+const orientVt = document.getElementById('orientVt');
+const orientSq = document.getElementById('orientSq');
 
-// ---------- Interruptor de límite ----------
+// ---------- Pregunta de orientación ----------
+function setOrientation(value){
+  if (working) return;
+  orientation = value;
+  orientVt.classList.toggle('active', value === 'vt');
+  orientSq.classList.toggle('active', value === 'sq');
+  refresh();
+}
+orientVt.addEventListener('click', () => setOrientation('vt'));
+orientSq.addEventListener('click', () => setOrientation('sq'));
+
+// ---------- Interruptores ----------
 limitSwitch.addEventListener('click', () => {
   if (working) return;
   limitOn = !limitOn;
   limitSwitch.classList.toggle('on', limitOn);
   limitSwitch.setAttribute('aria-checked', String(limitOn));
+});
+stripSwitch.addEventListener('click', () => {
+  if (working) return;
+  stripOn = !stripOn;
+  stripSwitch.classList.toggle('on', stripOn);
+  stripSwitch.setAttribute('aria-checked', String(stripOn));
 });
 
 // ---------- Selección de archivos ----------
@@ -245,8 +301,15 @@ function addFiles(list){
 
 function refresh(){
   const pending = files.filter(f => f.status === 'wait').length;
-  goButtons.forEach(b => b.disabled = working || pending === 0);
-  count.textContent = pending ? `${pending} video(s) listos para procesar` : '';
+  goSq.disabled = goVt.disabled = working || pending === 0;
+  goAuto.disabled = working || pending === 0 || orientation === null;
+  if (pending === 0){
+    count.textContent = '';
+  } else if (orientation === null){
+    count.textContent = `${pending} video(s) en cola — responde cómo vienen para habilitar "Exportar", o usa los botones de formato fijo.`;
+  } else {
+    count.textContent = `${pending} video(s) listos para procesar`;
+  }
 }
 
 // ---------- Metadata del video (duración y dimensiones) ----------
@@ -301,9 +364,7 @@ async function loadEngine(firstTime, logger){
   return null;
 }
 
-// ---------- Detección de barras negras incrustadas ----------
-// Analiza los primeros segundos del video con cropdetect para encontrar el
-// rectángulo de contenido real (sin el negro que venga pegado de fábrica).
+// ---------- Detección de barras negras incrustadas (solo con el interruptor encendido) ----------
 async function analyzeCrop(item, first){
   const lines = [];
   const eng = await loadEngine(first, ({ message }) => {
@@ -341,13 +402,18 @@ function validateCrop(crop, meta){
 }
 
 // ---------- Procesamiento ----------
-goAuto.addEventListener('click', () => processAll('auto'));
-goSq.addEventListener('click',   () => processAll('sq'));
-goVt.addEventListener('click',   () => processAll('vt'));
+goAuto.addEventListener('click', () => {
+  // Vienen en vertical → salen en cuadrado. Vienen en cuadrado → salen en vertical.
+  if (orientation === 'vt') processAll(FMT_SQ);
+  else if (orientation === 'sq') processAll(FMT_VT);
+});
+goSq.addEventListener('click', () => processAll(FMT_SQ));
+goVt.addEventListener('click', () => processAll(FMT_VT));
 
-async function processAll(mode){
+async function processAll(fmt){
   working = true;
-  limitSwitch.disabled = true;
+  limitSwitch.disabled = stripSwitch.disabled = true;
+  orientVt.disabled = orientSq.disabled = true;
   refresh();
 
   let first = true;
@@ -357,35 +423,27 @@ async function processAll(mode){
     if (item.status !== 'wait') continue;
     const stateEl = item.row.querySelector('.state');
 
-    // 1) Análisis: dimensiones, duración y barras incrustadas
-    stateEl.textContent = 'Analizando…';
-    stateEl.className = 'state run';
-    status.textContent = `Analizando ${item.file.name} — detectando barras negras incrustadas...`;
+    // Metadata solo si algún ajuste la necesita
+    const meta = (limitOn || stripOn) ? await getMeta(item.file) : null;
 
-    const meta = await getMeta(item.file);
-    const res  = await analyzeCrop(item, first);
-    first = false;
-    if (res.engineFailed){ engineFailed = true; break; }
-    const crop = validateCrop(res.crop, meta);
-
-    // 2) Formato destino
-    let fmt;
-    if (mode === 'sq') fmt = FMT_SQ;
-    else if (mode === 'vt') fmt = FMT_VT;
-    else {
-      // Inteligente: se usa la forma del CONTENIDO real (ya sin barras).
-      const cw = crop ? crop.w : (meta ? meta.w : 0);
-      const ch = crop ? crop.h : (meta ? meta.h : 1);
-      const aspect = ch > 0 ? cw / ch : 1;
-      // Cuadrado (0.95–1.05) → sale vertical. Vertical u horizontal → sale cuadrado.
-      fmt = (aspect > 0.95 && aspect < 1.05) ? FMT_VT : FMT_SQ;
+    // Detección de barras incrustadas: SOLO si el interruptor está encendido
+    let crop = null;
+    if (stripOn){
+      stateEl.textContent = 'Analizando barras…';
+      stateEl.className = 'state run';
+      status.textContent = `Analizando ${item.file.name} — detectando barras negras incrustadas...`;
+      const res = await analyzeCrop(item, first);
+      first = false;
+      if (res.engineFailed){ engineFailed = true; break; }
+      crop = validateCrop(res.crop, meta);
     }
 
-    // 3) Plan de límite de 15 MB
+    // Plan de límite de 15 MB
     const plan = limitOn ? planLimit(meta ? meta.dur : null) : null;
 
-    // 4) Conversión
-    ffmpeg = await loadEngine(false);
+    // Conversión directa
+    ffmpeg = await loadEngine(first);
+    first = false;
     if (!ffmpeg){ engineFailed = true; break; }
     const success = await processOne(item, fmt, crop, plan);
     try { ffmpeg.exit(); } catch(_){}
@@ -415,7 +473,8 @@ async function processAll(mode){
       : 'Listo. Todos los videos procesados fueron descargados.';
   }
   working = false;
-  limitSwitch.disabled = false;
+  limitSwitch.disabled = stripSwitch.disabled = false;
+  orientVt.disabled = orientSq.disabled = false;
   refresh();
 }
 
@@ -436,7 +495,7 @@ async function processOne(item, fmt, crop, plan){
 
     ffmpeg.FS('writeFile', inName, await fetchFile(item.file));
 
-    // Cadena de filtros: (recorte de barras incrustadas) → escalar → rellenar
+    // Cadena de filtros: (recorte de barras incrustadas si aplica) → escalar → rellenar
     let vf = '';
     if (crop) vf += `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},`;
     vf += `scale=${fmt.w}:${fmt.h}:force_original_aspect_ratio=decrease,` +
