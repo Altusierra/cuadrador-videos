@@ -499,7 +499,7 @@ async function processOne(item, fmt, crop, plan){
     let vf = '';
     if (crop) vf += `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},`;
     vf += `scale=${fmt.w}:${fmt.h}:force_original_aspect_ratio=decrease,` +
-          `pad=${fmt.w}:${fmt.h}:(ow-iw)/2:(oh-ih)/2:black`;
+          `pad=${fmt.w}:${fmt.h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1`;
 
     const args = ['-i', inName];
     if (plan && plan.trimSec) args.push('-t', String(plan.trimSec));
