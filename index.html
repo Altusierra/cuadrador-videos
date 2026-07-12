@@ -144,7 +144,7 @@
 <header>
   <div class="eyebrow">Herramienta del equipo</div>
   <h1>Cuadrador de videos</h1>
-  <p class="sub">Sube uno o varios videos y exporta en cuadrado 1:1 (feed) o en cuadrado + vertical 9:16 (Reels/Stories) a la vez. Las barras negras se agregan solo donde hacen falta, se elimina toda la metadata y cada video se descarga automáticamente al terminar. Todo ocurre en tu navegador: los videos nunca salen de tu computador.</p>
+  <p class="sub">Sube uno o varios videos. Antes de convertir, la herramienta detecta y elimina las barras negras que vengan incrustadas en el original, para que el contenido real aproveche todo el espacio posible. Luego lo encaja en el formato elegido agregando negro solo donde hace falta, elimina toda la metadata y descarga cada video automáticamente. Todo ocurre en tu navegador: los videos nunca salen de tu computador.</p>
 </header>
 
 <div class="drop" id="drop" tabindex="0" role="button" aria-label="Subir videos">
@@ -165,15 +165,16 @@
 </div>
 
 <div class="actions">
-  <button class="go" id="goSq" disabled>Exportar en cuadrado</button>
-  <button class="go alt" id="goBoth" disabled>Exportar en cuadrado y 9:16</button>
+  <button class="go" id="goAuto" disabled>Exportar</button>
+  <button class="go alt" id="goSq" disabled>Exportar cuadrado</button>
+  <button class="go alt" id="goVt" disabled>Exportar vertical</button>
+  <span class="hint">"Exportar" convierte cada video al formato contrario: los verticales salen en cuadrado 1:1 y los cuadrados salen en vertical 9:16 (los horizontales salen en cuadrado). Los otros dos botones llevan todo el lote a un mismo formato.</span>
   <span class="hint" id="count"></span>
 </div>
 <div class="status" id="status"></div>
 
 <footer>
-  Salida: MP4 · 1:1 (1080×1080) o 9:16 (1080×1920) · sin metadata.<br>
-  Solo cuadrado: mismo nombre del original. Ambos formatos: sufijos "-cuadrado" y "-vertical".<br>
+  Salida: MP4 · 1:1 (1080×1080) o 9:16 (1080×1920) · sin metadata · mismo nombre del original.<br>
   El procesamiento usa la potencia de tu propio equipo; los videos largos pueden tardar varios minutos.
 </footer>
 
@@ -192,14 +193,20 @@ const AUDIO_KBPS    = 128;               // audio al comprimir con límite
 const FLOOR_KBPS    = 2000;              // calidad mínima de video (piso)
 const CEIL_KBPS     = 6000;              // techo: más que esto no aporta a 1080p
 
+// ---- Formatos ----
+const FMT_SQ = { w:1080, h:1080, label:'1:1'  };
+const FMT_VT = { w:1080, h:1920, label:'9:16' };
+
 const drop   = document.getElementById('drop');
 const picker = document.getElementById('picker');
 const queue  = document.getElementById('queue');
+const goAuto = document.getElementById('goAuto');
 const goSq   = document.getElementById('goSq');
-const goBoth = document.getElementById('goBoth');
+const goVt   = document.getElementById('goVt');
 const count  = document.getElementById('count');
 const status = document.getElementById('status');
 const limitSwitch = document.getElementById('limitSwitch');
+const goButtons = [goAuto, goSq, goVt];
 
 // ---------- Interruptor de límite ----------
 limitSwitch.addEventListener('click', () => {
@@ -238,17 +245,20 @@ function addFiles(list){
 
 function refresh(){
   const pending = files.filter(f => f.status === 'wait').length;
-  goSq.disabled = goBoth.disabled = working || pending === 0;
+  goButtons.forEach(b => b.disabled = working || pending === 0);
   count.textContent = pending ? `${pending} video(s) listos para procesar` : '';
 }
 
-// ---------- Duración del video (para el límite de 15 MB) ----------
-function getDuration(file){
+// ---------- Metadata del video (duración y dimensiones) ----------
+function getMeta(file){
   return new Promise(resolve => {
     const v = document.createElement('video');
     v.preload = 'metadata';
     const url = URL.createObjectURL(file);
-    v.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(v.duration); };
+    v.onloadedmetadata = () => {
+      const meta = { dur: v.duration, w: v.videoWidth, h: v.videoHeight };
+      URL.revokeObjectURL(url); resolve(meta);
+    };
     v.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
     v.src = url;
   });
@@ -256,30 +266,24 @@ function getDuration(file){
 
 // Calcula bitrate de video (kbps) y recorte (segundos o null) para caber en 15 MB
 function planLimit(durationSec){
-  const budgetKbits = (LIMIT_BYTES * 8 / 1000) * SAFETY;   // presupuesto total en kbits
+  const budgetKbits = (LIMIT_BYTES * 8 / 1000) * SAFETY;
   if (!durationSec || !isFinite(durationSec) || durationSec <= 0){
-    // Sin duración conocida: comprimir al piso sin recortar (caso raro)
     return { vKbps: FLOOR_KBPS, trimSec: null };
   }
-  const vKbpsFull = budgetKbits / durationSec - AUDIO_KBPS; // video kbps si va completo
+  const vKbpsFull = budgetKbits / durationSec - AUDIO_KBPS;
   if (vKbpsFull >= FLOOR_KBPS){
     return { vKbps: Math.min(Math.round(vKbpsFull), CEIL_KBPS), trimSec: null };
   }
-  // Ni con el piso cabe completo: recortar desde el segundo 0
   const trimSec = Math.floor(budgetKbits / (FLOOR_KBPS + AUDIO_KBPS));
   return { vKbps: FLOOR_KBPS, trimSec };
 }
-
-// ---------- Formatos ----------
-const FMT_SQ = { w:1080, h:1080, suffix:'cuadrado', label:'1:1'  };
-const FMT_VT = { w:1080, h:1920, suffix:'vertical', label:'9:16' };
 
 // ---------- Motor ----------
 // El motor de navegador solo permite UNA ejecución por carga, así que se crea
 // una instancia nueva por cada pasada. El navegador guarda en caché los ~25 MB,
 // por lo que solo la primera carga es lenta. Esto además libera la memoria
 // entre videos, evitando fallos acumulados con archivos grandes.
-async function loadEngine(firstTime){
+async function loadEngine(firstTime, logger){
   if (firstTime) status.textContent = 'Cargando el motor de video (solo la primera vez, ~25 MB)...';
   const cores = [
     'https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js',
@@ -287,7 +291,9 @@ async function loadEngine(firstTime){
   ];
   for (const corePath of cores){
     try {
-      const candidate = createFFmpeg({ log: false, corePath, mainName: 'main' });
+      const opts = { log: false, corePath, mainName: 'main' };
+      if (logger) opts.logger = logger;
+      const candidate = createFFmpeg(opts);
       await candidate.load();
       if (candidate.isLoaded()) return candidate;
     } catch(e){ console.warn('Fallo al cargar core desde', corePath, e); }
@@ -295,11 +301,51 @@ async function loadEngine(firstTime){
   return null;
 }
 
-// ---------- Procesamiento ----------
-goSq.addEventListener('click',   () => processAll([FMT_SQ], false));
-goBoth.addEventListener('click', () => processAll([FMT_SQ, FMT_VT], true));
+// ---------- Detección de barras negras incrustadas ----------
+// Analiza los primeros segundos del video con cropdetect para encontrar el
+// rectángulo de contenido real (sin el negro que venga pegado de fábrica).
+async function analyzeCrop(item, first){
+  const lines = [];
+  const eng = await loadEngine(first, ({ message }) => {
+    if (message && message.indexOf('crop=') !== -1) lines.push(message);
+  });
+  if (!eng) return { engineFailed: true, crop: null };
 
-async function processAll(fmts, multi){
+  const inName = 'probe_' + Date.now() + '.' + item.file.name.split('.').pop();
+  try{
+    eng.FS('writeFile', inName, await fetchFile(item.file));
+    await eng.run('-i', inName, '-t', '5', '-vf', 'cropdetect=24:2:0', '-f', 'null', '-');
+  }catch(e){ console.warn('Análisis de barras falló (se continúa sin recorte):', e); }
+  try{ eng.FS('unlink', inName); }catch(_){}
+  try{ eng.exit(); }catch(_){}
+
+  let crop = null;
+  for (const l of lines){
+    const m = l.match(/crop=(\d+):(\d+):(\d+):(\d+)/);
+    if (m) crop = { w:+m[1], h:+m[2], x:+m[3], y:+m[4] };
+  }
+  return { engineFailed: false, crop };
+}
+
+// Valida el recorte detectado: se ignora si es casi el cuadro completo
+// (no hay barras que quitar) o si es sospechosamente pequeño (falso positivo).
+function validateCrop(crop, meta){
+  if (!crop || crop.w < 64 || crop.h < 64) return null;
+  crop.w -= crop.w % 2; crop.h -= crop.h % 2;
+  if (meta && meta.w && meta.h){
+    const nearFull = crop.w >= meta.w - 8 && crop.h >= meta.h - 8;
+    const tooSmall = (crop.w * crop.h) < 0.2 * (meta.w * meta.h);
+    if (nearFull || tooSmall) return null;
+  }
+  return crop;
+}
+
+// ---------- Procesamiento ----------
+goAuto.addEventListener('click', () => processAll('auto'));
+goSq.addEventListener('click',   () => processAll('sq'));
+goVt.addEventListener('click',   () => processAll('vt'));
+
+async function processAll(mode){
   working = true;
   limitSwitch.disabled = true;
   refresh();
@@ -311,36 +357,50 @@ async function processAll(fmts, multi){
     if (item.status !== 'wait') continue;
     const stateEl = item.row.querySelector('.state');
 
-    // Plan de límite (una vez por video, compartido entre formatos)
-    let plan = null;
-    if (limitOn){
-      const dur = await getDuration(item.file);
-      plan = planLimit(dur);
+    // 1) Análisis: dimensiones, duración y barras incrustadas
+    stateEl.textContent = 'Analizando…';
+    stateEl.className = 'state run';
+    status.textContent = `Analizando ${item.file.name} — detectando barras negras incrustadas...`;
+
+    const meta = await getMeta(item.file);
+    const res  = await analyzeCrop(item, first);
+    first = false;
+    if (res.engineFailed){ engineFailed = true; break; }
+    const crop = validateCrop(res.crop, meta);
+
+    // 2) Formato destino
+    let fmt;
+    if (mode === 'sq') fmt = FMT_SQ;
+    else if (mode === 'vt') fmt = FMT_VT;
+    else {
+      // Inteligente: se usa la forma del CONTENIDO real (ya sin barras).
+      const cw = crop ? crop.w : (meta ? meta.w : 0);
+      const ch = crop ? crop.h : (meta ? meta.h : 1);
+      const aspect = ch > 0 ? cw / ch : 1;
+      // Cuadrado (0.95–1.05) → sale vertical. Vertical u horizontal → sale cuadrado.
+      fmt = (aspect > 0.95 && aspect < 1.05) ? FMT_VT : FMT_SQ;
     }
 
-    let ok = 0;
-    for (const fmt of fmts){
-      ffmpeg = await loadEngine(first);
-      first = false;
-      if (!ffmpeg){ engineFailed = true; break; }
+    // 3) Plan de límite de 15 MB
+    const plan = limitOn ? planLimit(meta ? meta.dur : null) : null;
 
-      const success = await processOne(item, fmt, multi, plan);
-      if (success) ok++;
+    // 4) Conversión
+    ffmpeg = await loadEngine(false);
+    if (!ffmpeg){ engineFailed = true; break; }
+    const success = await processOne(item, fmt, crop, plan);
+    try { ffmpeg.exit(); } catch(_){}
+    ffmpeg = null;
 
-      try { ffmpeg.exit(); } catch(_){}
-      ffmpeg = null;
-    }
-    if (engineFailed) break;
-
-    if (ok === fmts.length){
+    if (success){
       item.status = 'done';
-      let label = multi ? 'Exportado ×2' : 'Exportado';
+      let label = 'Exportado ' + fmt.label;
+      if (crop) label += ' · barras del original eliminadas';
       if (plan && plan.trimSec) label += ` · recortado a ${plan.trimSec}s`;
       stateEl.textContent = label;
       stateEl.className = 'state done';
     } else {
       item.status = 'fail';
-      stateEl.textContent = ok > 0 ? 'Exportado parcial' : 'Error';
+      stateEl.textContent = 'Error';
       stateEl.className = 'state fail';
     }
   }
@@ -359,7 +419,7 @@ async function processAll(fmts, multi){
   refresh();
 }
 
-async function processOne(item, fmt, multi, plan){
+async function processOne(item, fmt, crop, plan){
   const stateEl = item.row.querySelector('.state');
   const barEl   = item.row.querySelector('.bar i');
   stateEl.textContent = 'Procesando ' + fmt.label + '…';
@@ -376,20 +436,21 @@ async function processOne(item, fmt, multi, plan){
 
     ffmpeg.FS('writeFile', inName, await fetchFile(item.file));
 
-    const vf = `scale=${fmt.w}:${fmt.h}:force_original_aspect_ratio=decrease,` +
-               `pad=${fmt.w}:${fmt.h}:(ow-iw)/2:(oh-ih)/2:black`;
+    // Cadena de filtros: (recorte de barras incrustadas) → escalar → rellenar
+    let vf = '';
+    if (crop) vf += `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},`;
+    vf += `scale=${fmt.w}:${fmt.h}:force_original_aspect_ratio=decrease,` +
+          `pad=${fmt.w}:${fmt.h}:(ow-iw)/2:(oh-ih)/2:black`;
 
     const args = ['-i', inName];
     if (plan && plan.trimSec) args.push('-t', String(plan.trimSec));
     args.push('-vf', vf, '-map_metadata', '-1', '-c:v', 'libx264', '-preset', 'veryfast');
 
     if (plan){
-      // Modo límite 15 MB: bitrate objetivo calculado
       const v = plan.vKbps + 'k';
       args.push('-b:v', v, '-maxrate', v, '-bufsize', (plan.vKbps * 2) + 'k',
                 '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', AUDIO_KBPS + 'k');
     } else {
-      // Modo normal: calidad casi sin pérdida
       args.push('-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k');
     }
     args.push('-movflags', '+faststart', outName);
@@ -400,8 +461,7 @@ async function processOne(item, fmt, multi, plan){
     const blob = new Blob([data.buffer], { type: 'video/mp4' });
     const url  = URL.createObjectURL(blob);
     const base = item.file.name.replace(/\.[^.]+$/, '');
-    // Solo cuadrado: mismo nombre del original. Ambos: sufijos -cuadrado / -vertical.
-    const outFileName = multi ? `${base}-${fmt.suffix}.mp4` : `${base}.mp4`;
+    const outFileName = base + '.mp4';   // mismo nombre del original
 
     // Descarga automática
     const a = document.createElement('a');
@@ -412,7 +472,7 @@ async function processOne(item, fmt, multi, plan){
     // Botón por si necesita volver a descargarlo
     const dl = document.createElement('button');
     dl.className = 'dl';
-    dl.textContent = multi ? ('Descargar ' + fmt.suffix) : 'Descargar de nuevo';
+    dl.textContent = 'Descargar de nuevo';
     dl.onclick = () => { const b = document.createElement('a'); b.href = url; b.download = outFileName; b.click(); };
     item.row.appendChild(dl);
 
