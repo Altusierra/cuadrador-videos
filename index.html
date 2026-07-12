@@ -191,36 +191,57 @@ function refresh(){
 // ---------- Procesamiento ----------
 go.addEventListener('click', processAll);
 
+// El motor de navegador solo permite UNA ejecución por carga, así que
+// creamos una instancia nueva por cada video. El navegador guarda en caché
+// los ~25 MB del motor, por lo que solo la primera carga es lenta; las
+// siguientes toman 1-2 segundos. Esto además libera toda la memoria entre
+// videos, lo que permite procesar archivos más grandes sin acumular fallos.
+async function loadEngine(firstTime){
+  if (firstTime) status.textContent = 'Cargando el motor de video (solo la primera vez, ~25 MB)...';
+  const cores = [
+    'https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js',
+    'https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js'
+  ];
+  for (const corePath of cores){
+    try {
+      const candidate = createFFmpeg({ log: false, corePath, mainName: 'main' });
+      await candidate.load();
+      if (candidate.isLoaded()) return candidate;
+    } catch(e){ console.warn('Fallo al cargar core desde', corePath, e); }
+  }
+  return null;
+}
+
 async function processAll(){
   working = true;
   refresh();
 
-  if (!ffmpeg || !ffmpeg.isLoaded()){
-    status.textContent = 'Cargando el motor de video (solo la primera vez, ~25 MB)...';
-    const cores = [
-      'https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js',
-      'https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js'
-    ];
-    ffmpeg = null;
-    for (const corePath of cores){
-      try {
-        const candidate = createFFmpeg({ log: false, corePath, mainName: 'main' });
-        await candidate.load();
-        if (candidate.isLoaded()){ ffmpeg = candidate; break; }
-      } catch(e){ console.warn('Fallo al cargar core desde', corePath, e); }
-    }
-    if (!ffmpeg || !ffmpeg.isLoaded()){
-      status.textContent = 'No se pudo descargar el motor de video. Si estás viendo esto en la vista previa de Claude, es normal: ese entorno bloquea descargas externas. Publica este archivo en Netlify (app.netlify.com/drop) y funcionará. Si ya está publicado, revisa tu conexión y recarga la página.';
-      working = false; refresh(); return;
-    }
-  }
+  let first = true;
+  let engineFailed = false;
 
   for (const item of files){
     if (item.status !== 'wait') continue;
+
+    ffmpeg = await loadEngine(first);
+    first = false;
+    if (!ffmpeg){ engineFailed = true; break; }
+
     await processOne(item);
+
+    // Liberar el motor y su memoria antes del siguiente video
+    try { ffmpeg.exit(); } catch(_){}
+    ffmpeg = null;
   }
 
-  status.textContent = 'Listo. Todos los videos procesados fueron descargados.';
+  if (engineFailed){
+    status.textContent = 'No se pudo descargar el motor de video. Si estás viendo esto en la vista previa de Claude, es normal: ese entorno bloquea descargas externas. Publica este archivo en Netlify (app.netlify.com/drop) y funcionará. Si ya está publicado, revisa tu conexión y recarga la página.';
+  } else {
+    const done = files.filter(f => f.status === 'done').length;
+    const fail = files.filter(f => f.status === 'fail').length;
+    status.textContent = fail
+      ? `Terminado: ${done} exportado(s), ${fail} con error. Los fallidos suelen ser archivos demasiado grandes para el navegador; puedes reintentarlos de uno en uno recargando la página.`
+      : 'Listo. Todos los videos procesados fueron descargados.';
+  }
   working = false;
   refresh();
 }
@@ -260,18 +281,19 @@ async function processOne(item){
     const blob = new Blob([data.buffer], { type: 'video/mp4' });
     const url  = URL.createObjectURL(blob);
     const base = item.file.name.replace(/\.[^.]+$/, '');
+    const outFileName = base + '.mp4';
 
-    // Descarga automática
+    // Descarga automática (mismo nombre que el original)
     const a = document.createElement('a');
     a.href = url;
-    a.download = base + '_cuadrado.mp4';
+    a.download = outFileName;
     a.click();
 
     // Botón por si necesita volver a descargarlo
     const dl = document.createElement('button');
     dl.className = 'dl';
     dl.textContent = 'Descargar de nuevo';
-    dl.onclick = () => { const b = document.createElement('a'); b.href = url; b.download = base + '_cuadrado.mp4'; b.click(); };
+    dl.onclick = () => { const b = document.createElement('a'); b.href = url; b.download = outFileName; b.click(); };
     item.row.appendChild(dl);
 
     barEl.style.width = '100%';
