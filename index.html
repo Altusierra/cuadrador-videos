@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cuadrador de Videos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#101216;
+    --surface:#1A1D23;
+    --surface-2:#22262E;
+    --line:#2E333D;
+    --text:#E9EBEF;
+    --text-dim:#9AA1AD;
+    --accent:#8FB4FF;
+    --accent-ink:#0E1524;
+    --ok:#7ED9A2;
+    --err:#F08A8A;
+    --radius:14px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:'Inter',system-ui,sans-serif;
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:40px 20px 80px;
+  }
+  header{max-width:640px;width:100%;margin-bottom:28px}
+  .eyebrow{
+    font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);font-weight:600;margin-bottom:10px;
+  }
+  h1{
+    font-family:'Space Grotesk',sans-serif;font-weight:700;
+    font-size:clamp(26px,4vw,34px);line-height:1.15;
+  }
+  .sub{color:var(--text-dim);margin-top:10px;font-size:15px;line-height:1.55}
+
+  /* ---- Zona de arrastre: un marco 1:1 que muestra el concepto ---- */
+  .drop{
+    width:100%;max-width:640px;
+    background:var(--surface);
+    border:1.5px dashed var(--line);
+    border-radius:var(--radius);
+    padding:34px 20px;
+    display:flex;flex-direction:column;align-items:center;gap:18px;
+    cursor:pointer;
+    transition:border-color .2s, background .2s;
+  }
+  .drop.over{border-color:var(--accent);background:var(--surface-2)}
+  .frame{
+    width:120px;height:120px;background:#000;border-radius:8px;
+    display:flex;align-items:center;justify-content:center;
+    border:1px solid var(--line);
+  }
+  .frame .clip{
+    width:100%;height:56%;
+    background:linear-gradient(120deg,#39424f, #545f6f);
+    border-radius:2px;
+  }
+  .drop strong{font-family:'Space Grotesk',sans-serif;font-size:17px}
+  .drop span{color:var(--text-dim);font-size:13.5px;text-align:center;line-height:1.5}
+  input[type=file]{display:none}
+
+  /* ---- Lista de archivos ---- */
+  .queue{width:100%;max-width:640px;margin-top:22px;display:flex;flex-direction:column;gap:10px}
+  .item{
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    padding:14px 16px;display:flex;align-items:center;gap:14px;
+  }
+  .item .name{flex:1;min-width:0}
+  .item .name b{
+    display:block;font-weight:500;font-size:14px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .item .name small{color:var(--text-dim);font-size:12.5px}
+  .bar{height:5px;background:var(--surface-2);border-radius:99px;margin-top:8px;overflow:hidden}
+  .bar i{display:block;height:100%;width:0%;background:var(--accent);border-radius:99px;transition:width .3s}
+  .state{font-size:12.5px;font-weight:600;white-space:nowrap}
+  .state.wait{color:var(--text-dim)}
+  .state.run{color:var(--accent)}
+  .state.done{color:var(--ok)}
+  .state.fail{color:var(--err)}
+  .dl{
+    background:none;border:1px solid var(--line);color:var(--text);
+    border-radius:8px;padding:7px 12px;font-size:12.5px;font-weight:600;
+    cursor:pointer;font-family:inherit;
+  }
+  .dl:hover{border-color:var(--accent);color:var(--accent)}
+
+  /* ---- Botón principal ---- */
+  .actions{width:100%;max-width:640px;margin-top:22px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .go{
+    background:var(--accent);color:var(--accent-ink);
+    border:none;border-radius:10px;padding:14px 26px;
+    font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15.5px;
+    cursor:pointer;
+  }
+  .go:disabled{opacity:.45;cursor:not-allowed}
+  .go:not(:disabled):hover{filter:brightness(1.08)}
+  .hint{color:var(--text-dim);font-size:13px;line-height:1.5}
+  .status{width:100%;max-width:640px;margin-top:16px;color:var(--text-dim);font-size:13.5px;min-height:20px}
+
+  footer{margin-top:auto;padding-top:50px;color:var(--text-dim);font-size:12.5px;max-width:640px;text-align:center;line-height:1.6}
+  a{color:var(--accent)}
+  button:focus-visible,.drop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="eyebrow">Herramienta del equipo</div>
+  <h1>Cuadrador de videos</h1>
+  <p class="sub">Sube uno o varios videos. Cada uno se convierte a formato cuadrado 1080×1080 con barras negras, se elimina toda la metadata y se descarga automáticamente al terminar. Todo ocurre en tu navegador: los videos nunca salen de tu computador.</p>
+</header>
+
+<div class="drop" id="drop" tabindex="0" role="button" aria-label="Subir videos">
+  <div class="frame"><div class="clip"></div></div>
+  <strong>Arrastra tus videos aquí</strong>
+  <span>o haz clic para elegirlos · MP4, MOV, AVI, MKV, WEBM<br>Recomendado: archivos de menos de 500 MB cada uno</span>
+  <input type="file" id="picker" accept="video/*" multiple>
+</div>
+
+<div class="queue" id="queue"></div>
+
+<div class="actions">
+  <button class="go" id="go" disabled>Procesar y exportar todo</button>
+  <span class="hint" id="count"></span>
+</div>
+<div class="status" id="status"></div>
+
+<footer>
+  Salida: MP4 · 1080×1080 · calidad CRF 18 (visualmente sin pérdida) · sin metadata.<br>
+  El procesamiento usa la potencia de tu propio equipo; los videos largos pueden tardar varios minutos.
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ffmpeg/0.11.6/ffmpeg.min.js"></script>
+<script>
+const { createFFmpeg, fetchFile } = FFmpeg;
+let ffmpeg = null;
+let files = [];          // { file, status, row }
+let working = false;
+
+const drop   = document.getElementById('drop');
+const picker = document.getElementById('picker');
+const queue  = document.getElementById('queue');
+const go     = document.getElementById('go');
+const count  = document.getElementById('count');
+const status = document.getElementById('status');
+
+// ---------- Selección de archivos ----------
+drop.addEventListener('click', () => picker.click());
+drop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') picker.click(); });
+picker.addEventListener('change', () => addFiles(picker.files));
+['dragover','dragenter'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+
+function addFiles(list){
+  for (const f of list){
+    if (!f.type.startsWith('video/') && !/\.(mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f.name)) continue;
+    const row = document.createElement('div');
+    row.className = 'item';
+    row.innerHTML = `
+      <div class="name">
+        <b>${f.name}</b>
+        <small>${(f.size/1048576).toFixed(1)} MB</small>
+        <div class="bar"><i></i></div>
+      </div>
+      <span class="state wait">En cola</span>`;
+    queue.appendChild(row);
+    files.push({ file: f, status: 'wait', row });
+  }
+  picker.value = '';
+  refresh();
+}
+
+function refresh(){
+  const pending = files.filter(f => f.status === 'wait').length;
+  go.disabled = working || pending === 0;
+  count.textContent = pending ? `${pending} video(s) listos para procesar` : '';
+}
+
+// ---------- Procesamiento ----------
+go.addEventListener('click', processAll);
+
+async function processAll(){
+  working = true;
+  refresh();
+
+  if (!ffmpeg || !ffmpeg.isLoaded()){
+    status.textContent = 'Cargando el motor de video (solo la primera vez, ~25 MB)...';
+    const cores = [
+      'https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js',
+      'https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js'
+    ];
+    ffmpeg = null;
+    for (const corePath of cores){
+      try {
+        const candidate = createFFmpeg({ log: false, corePath, mainName: 'main' });
+        await candidate.load();
+        if (candidate.isLoaded()){ ffmpeg = candidate; break; }
+      } catch(e){ console.warn('Fallo al cargar core desde', corePath, e); }
+    }
+    if (!ffmpeg || !ffmpeg.isLoaded()){
+      status.textContent = 'No se pudo descargar el motor de video. Si estás viendo esto en la vista previa de Claude, es normal: ese entorno bloquea descargas externas. Publica este archivo en Netlify (app.netlify.com/drop) y funcionará. Si ya está publicado, revisa tu conexión y recarga la página.';
+      working = false; refresh(); return;
+    }
+  }
+
+  for (const item of files){
+    if (item.status !== 'wait') continue;
+    await processOne(item);
+  }
+
+  status.textContent = 'Listo. Todos los videos procesados fueron descargados.';
+  working = false;
+  refresh();
+}
+
+async function processOne(item){
+  const stateEl = item.row.querySelector('.state');
+  const barEl   = item.row.querySelector('.bar i');
+  stateEl.textContent = 'Procesando…';
+  stateEl.className = 'state run';
+  status.textContent = `Procesando ${item.file.name} — no cierres esta pestaña.`;
+
+  const inName  = 'in_' + Date.now() + '.' + item.file.name.split('.').pop();
+  const outName = 'out_' + Date.now() + '.mp4';
+
+  try{
+    ffmpeg.setProgress(({ ratio }) => {
+      if (ratio >= 0 && ratio <= 1) barEl.style.width = (ratio*100).toFixed(0) + '%';
+    });
+
+    ffmpeg.FS('writeFile', inName, await fetchFile(item.file));
+
+    await ffmpeg.run(
+      '-i', inName,
+      '-vf', 'scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black',
+      '-map_metadata', '-1',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '18',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-movflags', '+faststart',
+      outName
+    );
+
+    const data = ffmpeg.FS('readFile', outName);
+    const blob = new Blob([data.buffer], { type: 'video/mp4' });
+    const url  = URL.createObjectURL(blob);
+    const base = item.file.name.replace(/\.[^.]+$/, '');
+
+    // Descarga automática
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = base + '_cuadrado.mp4';
+    a.click();
+
+    // Botón por si necesita volver a descargarlo
+    const dl = document.createElement('button');
+    dl.className = 'dl';
+    dl.textContent = 'Descargar de nuevo';
+    dl.onclick = () => { const b = document.createElement('a'); b.href = url; b.download = base + '_cuadrado.mp4'; b.click(); };
+    item.row.appendChild(dl);
+
+    barEl.style.width = '100%';
+    stateEl.textContent = 'Exportado';
+    stateEl.className = 'state done';
+    item.status = 'done';
+
+    ffmpeg.FS('unlink', inName);
+    ffmpeg.FS('unlink', outName);
+  }catch(e){
+    stateEl.textContent = 'Error';
+    stateEl.className = 'state fail';
+    item.status = 'fail';
+    try{ ffmpeg.FS('unlink', inName); }catch(_){}
+    console.error(e);
+  }
+}
+</script>
+</body>
+</html>
