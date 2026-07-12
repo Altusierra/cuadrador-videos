@@ -203,13 +203,15 @@
   <button class="go" id="goAuto" disabled>Exportar</button>
   <button class="go alt" id="goSq" disabled>Exportar cuadrado</button>
   <button class="go alt" id="goVt" disabled>Exportar vertical</button>
-  <span class="hint">"Exportar" convierte al formato contrario según tu respuesta: si vienen en vertical salen en cuadrado (laterales en negro), y si vienen en cuadrado salen en vertical (franjas arriba y abajo). Los otros dos botones llevan todo el lote a ese formato sin necesidad de responder la pregunta.</span>
+  <button class="go alt" id="goMeta" disabled>Solo quitar metadata</button>
+  <span class="hint">"Exportar" convierte al formato contrario según tu respuesta: si vienen en vertical salen en cuadrado (laterales en negro), y si vienen en cuadrado salen en vertical (franjas arriba y abajo). Los botones de formato fijo llevan todo el lote a ese formato sin necesidad de responder la pregunta. "Solo quitar metadata" no cambia el formato ni la calidad: limpia la metadata y descarga el video tal cual, casi al instante (ignora los interruptores).</span>
   <span class="hint" id="count"></span>
 </div>
 <div class="status" id="status"></div>
 
 <footer>
   Salida: MP4 · 1:1 (1080×1080) o 9:16 (1080×1920) · sin metadata · mismo nombre del original.<br>
+  Con "Solo quitar metadata" el video conserva su formato, calidad y peso originales.<br>
   El procesamiento usa la potencia de tu propio equipo; los videos largos pueden tardar varios minutos.
 </footer>
 
@@ -240,6 +242,7 @@ const queue  = document.getElementById('queue');
 const goAuto = document.getElementById('goAuto');
 const goSq   = document.getElementById('goSq');
 const goVt   = document.getElementById('goVt');
+const goMeta = document.getElementById('goMeta');
 const count  = document.getElementById('count');
 const status = document.getElementById('status');
 const limitSwitch = document.getElementById('limitSwitch');
@@ -301,7 +304,7 @@ function addFiles(list){
 
 function refresh(){
   const pending = files.filter(f => f.status === 'wait').length;
-  goSq.disabled = goVt.disabled = working || pending === 0;
+  goSq.disabled = goVt.disabled = goMeta.disabled = working || pending === 0;
   goAuto.disabled = working || pending === 0 || orientation === null;
   if (pending === 0){
     count.textContent = '';
@@ -409,6 +412,7 @@ goAuto.addEventListener('click', () => {
 });
 goSq.addEventListener('click', () => processAll(FMT_SQ));
 goVt.addEventListener('click', () => processAll(FMT_VT));
+goMeta.addEventListener('click', () => processAll(null));   // null = solo quitar metadata
 
 async function processAll(fmt){
   working = true;
@@ -416,6 +420,7 @@ async function processAll(fmt){
   orientVt.disabled = orientSq.disabled = true;
   refresh();
 
+  const metaOnly = (fmt === null);
   let first = true;
   let engineFailed = false;
 
@@ -423,6 +428,37 @@ async function processAll(fmt){
     if (item.status !== 'wait') continue;
     const stateEl = item.row.querySelector('.state');
 
+    // ----- Modo "solo quitar metadata": copia directa, sin re-codificar -----
+    if (metaOnly){
+      ffmpeg = await loadEngine(first);
+      first = false;
+      if (!ffmpeg){ engineFailed = true; break; }
+      let success = await processMetaOnly(item, false);
+      try { ffmpeg.exit(); } catch(_){}
+      ffmpeg = null;
+
+      // Si la copia directa falla (códec incompatible con MP4), se reintenta re-codificando
+      if (!success){
+        ffmpeg = await loadEngine(false);
+        if (!ffmpeg){ engineFailed = true; break; }
+        success = await processMetaOnly(item, true);
+        try { ffmpeg.exit(); } catch(_){}
+        ffmpeg = null;
+      }
+
+      if (success){
+        item.status = 'done';
+        stateEl.textContent = 'Exportado · solo metadata';
+        stateEl.className = 'state done';
+      } else {
+        item.status = 'fail';
+        stateEl.textContent = 'Error';
+        stateEl.className = 'state fail';
+      }
+      continue;
+    }
+
+    // ----- Modos de conversión de formato -----
     // Metadata solo si algún ajuste la necesita
     const meta = (limitOn || stripOn) ? await getMeta(item.file) : null;
 
@@ -476,6 +512,69 @@ async function processAll(fmt){
   limitSwitch.disabled = stripSwitch.disabled = false;
   orientVt.disabled = orientSq.disabled = false;
   refresh();
+}
+
+// ---------- Solo quitar metadata ----------
+// Copia directa de video y audio (sin re-codificar): calidad idéntica bit a bit
+// y proceso casi instantáneo. Si el códec del original no es compatible con el
+// contenedor MP4 (ej. algunos WEBM), se reintenta re-codificando.
+async function processMetaOnly(item, reencode){
+  const stateEl = item.row.querySelector('.state');
+  const barEl   = item.row.querySelector('.bar i');
+  stateEl.textContent = reencode ? 'Quitando metadata (recodificando)…' : 'Quitando metadata…';
+  stateEl.className = 'state run';
+  status.textContent = `Quitando metadata de ${item.file.name} — no cierres esta pestaña.`;
+
+  const inName  = 'in_' + Date.now() + '.' + item.file.name.split('.').pop();
+  const outName = 'out_' + Date.now() + '.mp4';
+
+  try{
+    ffmpeg.setProgress(({ ratio }) => {
+      if (ratio >= 0 && ratio <= 1) barEl.style.width = (ratio*100).toFixed(0) + '%';
+    });
+
+    ffmpeg.FS('writeFile', inName, await fetchFile(item.file));
+
+    const args = ['-i', inName, '-map_metadata', '-1'];
+    if (reencode){
+      args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+                '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k');
+    } else {
+      args.push('-c', 'copy');
+    }
+    args.push('-movflags', '+faststart', outName);
+
+    await ffmpeg.run(...args);
+
+    const data = ffmpeg.FS('readFile', outName);
+    if (!data || data.length === 0) throw new Error('Salida vacía');
+    const blob = new Blob([data.buffer], { type: 'video/mp4' });
+    const url  = URL.createObjectURL(blob);
+    const base = item.file.name.replace(/\.[^.]+$/, '');
+    const outFileName = base + '.mp4';   // mismo nombre del original
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = outFileName;
+    a.click();
+
+    const dl = document.createElement('button');
+    dl.className = 'dl';
+    dl.textContent = 'Descargar de nuevo';
+    dl.onclick = () => { const b = document.createElement('a'); b.href = url; b.download = outFileName; b.click(); };
+    item.row.appendChild(dl);
+
+    barEl.style.width = '100%';
+
+    ffmpeg.FS('unlink', inName);
+    ffmpeg.FS('unlink', outName);
+    return true;
+  }catch(e){
+    try{ ffmpeg.FS('unlink', inName); }catch(_){}
+    try{ ffmpeg.FS('unlink', outName); }catch(_){}
+    console.warn('Fallo quitando metadata (' + (reencode ? 'recodificando' : 'copia directa') + '):', e);
+    return false;
+  }
 }
 
 async function processOne(item, fmt, crop, plan){
